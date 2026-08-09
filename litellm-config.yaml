@@ -1,0 +1,18 @@
+model_list:
+  - model_name: claude-opus-5
+    litellm_params:
+      model: openai/cline-pass/qwen3.8-max
+      api_base: http://127.0.0.1:5001
+      api_key: YOUR_CLINE_API_KEY
+
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: openai/cline-pass/deepseek-v4-flash
+      api_base: http://127.0.0.1:5001
+      api_key: YOUR_CLINE_API_KEY
+
+litellm_settings:
+  master_key: sk-1234567890 # authentication for LiteLLM
+  drop_params: true
+  anthropic_route: true # enables the /v1/messages endpoint
+  use_chat_completions_url_for_anthropic_messages: true # route via /chat/completions, not /responses
