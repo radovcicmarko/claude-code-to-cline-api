@@ -267,3 +267,54 @@ litellm --config litellm-config.yaml --port 4000 --detailed_debug
 | `litellm-config.yaml`   | LiteLLM proxy configuration (models, settings)           |
 | `settings.json`         | Claude Code configuration (env vars, model)              |
 | `cline_unwrap_proxy.py` | Pass-through proxy that unwraps cline.bot's `data` field |
+| `dashboard.py`          | Web dashboard that manages the setup below               |
+
+---
+
+## Web Dashboard
+
+`dashboard.py` is a single-file, stdlib-only web dashboard that manages the whole
+setup from a browser. It needs **no extra installs** (only `litellm` + Python).
+
+### Run it
+
+```bash
+python3 dashboard.py
+```
+
+Then open **http://127.0.0.1:8080**. (Change the port with `DASH_PORT=9000 python3 dashboard.py`.)
+
+### What it does
+
+- **Creates `litellm-config.yaml`** on first launch if it doesn't exist (with
+  defaults you can edit in the UI).
+- **Edit models & keys** — pick the Opus and Sonnet models from a dropdown of the
+  ClinePass models (at [cline.bot docs](https://docs.cline.bot/getting-started/clinepass#models)),
+  or choose **"Custom…"** to type your own model id. Edit the Cline API key and
+  the LiteLLM master key in plain-text fields.
+- **Start / Stop proxy** — one button launches the whole chain:
+  `litellm → cline_unwrap_proxy.py → cline.bot`.
+- **Auto-restart on change** — whenever you save the config while the proxy is
+  running, the chain is stopped and restarted with the new settings automatically.
+- **Live logs** — a tabbed, auto-refreshing log viewer for both the litellm proxy
+  and the unwrap proxy.
+- **Settings hint** — shows the matching `~/.claude/settings.json` snippet for
+  your current master key and litellm port.
+
+### How it stores settings
+
+- The **models, API keys, and litellm settings** are written to `litellm-config.yaml`
+  (the same file the manual workflow uses).
+- The **litellm port** is kept in `dashboard_state.json` next to the config, because
+  `litellm-config.yaml` has no port entry — the dashboard persists it so the port you
+  set in the UI is the port the proxy runs on.
+
+### Manual steps it automates
+
+These are the same steps as the [How to Run](#how-to-run) section — the dashboard's
+**Start proxy** button just runs them for you:
+
+1. Starts `cline_unwrap_proxy.py` (port from your config, default 5001).
+2. Starts `litellm --config litellm-config.yaml --port <litellm_port>`.
+
+Then point Claude Code at LiteLLM (step 4 above / the `settings.json` hint in the UI).
