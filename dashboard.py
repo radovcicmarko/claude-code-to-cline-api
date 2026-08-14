@@ -525,7 +525,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
           padding: 12px 14px; font-size: 12px; color: #b1bac4; margin-top: 10px; }
   .hint code { color: #79c0ff; }
   .check { margin-right: 18px; color: #b1bac4; font-size: 13px; cursor: pointer; }
-  .check input { margin-right: 5px; }
   .err { color: #f85149; font-size: 12px; margin: 0 0 10px; }
 </style>
 </head>
@@ -580,9 +579,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
     <div class="row" style="margin-top:6px">
       <button id="btn-save" class="primary">Save configuration</button>
-      <label class="check"><input type="checkbox" id="drop-params" checked> drop_params</label>
-      <label class="check"><input type="checkbox" id="anthropic-route" checked> anthropic_route</label>
-      <label class="check"><input type="checkbox" id="use-chat" checked> use_chat_completions_url</label>
     </div>
 
     <div class="row">
@@ -680,7 +676,7 @@ function renderSnippet(){
            ANTHROPIC_AUTH_TOKEN: mk },
     theme: "dark", model: "sonnet"
   };
-  el.textContent = "~/.claude/settings.json\n" + JSON.stringify(snippet, null, 2);
+  el.textContent = "~/.claude/settings.json\\n" + JSON.stringify(snippet, null, 2);
 }
 ["master-key","litellm-port"].forEach(function(id){
   document.getElementById(id).addEventListener("input", renderSnippet);
@@ -714,9 +710,6 @@ function saveCfg(){
     sonnet_model: modelValue("sonnet-select","sonnet-custom"),
     cline_api_key: document.getElementById("cline-key").value,
     master_key: document.getElementById("master-key").value,
-    drop_params: document.getElementById("drop-params").checked,
-    anthropic_route: document.getElementById("anthropic-route").checked,
-    use_chat_completions: document.getElementById("use-chat").checked,
     litellm_port: document.getElementById("litellm-port").value,
     proxy_port: document.getElementById("proxy-port").value
   };
@@ -728,7 +721,7 @@ function saveCfg(){
         loadCfg();
         pollLogsNow();
       } else {
-        errors.textContent = d.errors.join("\n");
+        errors.textContent = d.errors.join("\\n");
         toast("validation failed", true);
       }
     })
@@ -741,9 +734,6 @@ function loadCfg(){
   fetch("/api/config").then(function(r){ return r.json(); }).then(function(d){
     document.getElementById("cline-key").value = d.cline_api_key;
     document.getElementById("master-key").value = d.master_key;
-    document.getElementById("drop-params").checked = !!d.drop_params;
-    document.getElementById("anthropic-route").checked = !!d.anthropic_route;
-    document.getElementById("use-chat").checked = !!d.use_chat_completions;
     document.getElementById("litellm-port").value = (d.ports && d.ports.litellm_port) || 4000;
     document.getElementById("proxy-port").value = (d.ports && d.ports.proxy_port) || 5001;
     buildSelect("opus-select", "opus-custom", d.opus_model);
