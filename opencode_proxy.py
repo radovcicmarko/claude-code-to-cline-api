@@ -15,7 +15,7 @@ Flow:
 import json
 import os
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
 OPENCODE_API_BASE = os.environ.get(
@@ -107,23 +107,52 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         req = Request(url, data=body, headers=headers, method=method)
         try:
-            with urlopen(req, timeout=600) as resp:
-                status = resp.status
-                resp_body = resp.read()
+            resp = urlopen(req, timeout=600)
         except Exception as e:
             status = getattr(e, "code", 500)
             resp_body = getattr(e, "read", lambda: b"")()
             if not resp_body:
                 resp_body = str(e).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp_body)))
+            self.end_headers()
+            self._safe_write(resp_body)
+            return
 
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(resp_body)))
-        self.end_headers()
-        self.wfile.write(resp_body)
+        # Stream the response through as it arrives so SSE chunks reach the
+        # client immediately instead of stalling until the upstream finishes.
+        with resp:
+            self.send_response(resp.status)
+            self.send_header(
+                "Content-Type",
+                resp.headers.get("Content-Type", "application/json"))
+            self.end_headers()
+            try:
+                while True:
+                    chunk = resp.read(8192)
+                    if not chunk:
+                        break
+                    self._safe_write(chunk)
+            except Exception as e:
+                # Client hung up or upstream stalled mid-stream — the response
+                # is already committed, so just drop the connection.
+                sys.stderr.write("stream aborted: %r\n" % (e,))
+                self.close_connection = True
+
+    def _safe_write(self, data):
+        try:
+            self.wfile.write(data)
+        except (ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
 
     def do_POST(self):
-        self._handle("POST")
+        try:
+            self._handle("POST")
+        except (ConnectionResetError, BrokenPipeError):
+            # Client hung up before/while we read the request — nothing to do.
+            sys.stderr.write("client disconnected mid-request\n")
+            self.close_connection = True
 
     def do_GET(self):
         self.send_response(200)
@@ -137,7 +166,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         }).encode()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._safe_write(body)
 
     def log_message(self, format, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), format % args))
@@ -145,7 +174,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 def main():
     port = int(os.environ.get("PROXY_PORT", "4000"))
-    server = HTTPServer(("127.0.0.1", port), ProxyHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), ProxyHandler)
     print("OpenCode routing proxy listening on 127.0.0.1:%d" % port, flush=True)
     print("  OpenCode API base: %s" % OPENCODE_API_BASE, flush=True)
     print("  LiteLLM base:      %s" % LITELLM_BASE, flush=True)
