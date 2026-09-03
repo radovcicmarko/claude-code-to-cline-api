@@ -3,13 +3,13 @@ model_list:
     litellm_params:
       model: openai/cline-pass/deepseek-v4-pro
       api_base: http://127.0.0.1:5001
-      api_key: sk_76110f518566613075d33de5e1f81971139dd0215f43a54b50724042bf612d71
+      api_key: <some api key>
 
   - model_name: claude-sonnet-5
     litellm_params:
       model: openai/cline-pass/deepseek-v4-flash
       api_base: http://127.0.0.1:5001
-      api_key: sk_76110f518566613075d33de5e1f81971139dd0215f43a54b50724042bf612d71
+      api_key: <some api key>
 
 litellm_settings:
   master_key: sk-1234567890 # authentication for LiteLLM

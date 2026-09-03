@@ -1,0 +1,18 @@
+model_list:
+  - model_name: claude-opus-5
+    litellm_params:
+      model: openai/glm-5.3-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: <some api key>
+
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: openai/glm-5.3-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: <some api key>
+
+litellm_settings:
+  master_key: sk-1234567890 # authentication for LiteLLM
+  drop_params: true
+  anthropic_route: true
+  use_chat_completions_url_for_anthropic_messages: true

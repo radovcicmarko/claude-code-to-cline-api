@@ -1,13 +1,37 @@
-# Claude Code → Cline API via LiteLLM
+# Claude Code → Cline API / OpenCode Go via LiteLLM
 
-This project connects **Claude Code** (Anthropic's CLI coding agent) to the **Cline API** (api.cline.bot) using **LiteLLM** as a proxy. It lets you use Cline's models (e.g. DeepSeek, Qwen) from within Claude Code by translating the Anthropic `messages` API to OpenAI's `chat/completions` API.
+This project connects **Claude Code** (Anthropic's CLI coding agent) to either the
+**Cline API** (api.cline.bot) or **OpenCode Go** (opencode.ai) using **LiteLLM** as
+a translation proxy. It lets you use non-Anthropic models (DeepSeek, Qwen, Kimi, etc.)
+from within Claude Code.
 
-## Request flow
+## Backends
+
+### Cline
+
+```
+Claude Code → LiteLLM (:4000) → unwrap proxy (:5001) → cline.bot
+```
 
 1. Claude Code sends an **Anthropic**-format request to `POST /v1/messages` on LiteLLM.
 2. LiteLLM translates it to the **OpenAI** format and forwards it as `POST /chat/completions`.
 3. The **unwrap proxy** (`cline_unwrap_proxy.py`) forwards it to cline.bot and unwraps the response.
 4. cline.bot returns the completion, which flows back up to Claude Code.
+
+### OpenCode Go
+
+```
+Claude Code → routing proxy (:4000)
+    ├─ Anthropic-native model (Qwen, MiniMax) → opencode.ai/zen/go/v1/messages  (direct)
+    └─ Other models (DeepSeek, Kimi, GLM) → LiteLLM (:4001) → opencode.ai/zen/go/v1
+```
+
+1. Claude Code sends an **Anthropic**-format request to the routing proxy on port 4000.
+2. The routing proxy checks the model:
+   - **Anthropic-native models** (Qwen, MiniMax) → proxies directly to OpenCode Go's `/v1/messages` endpoint. No translation needed — Claude Code already speaks Anthropic.
+   - **OpenAI-compatible models** (DeepSeek, Kimi, GLM, etc.) → forwards to LiteLLM on port 4001, which translates to OpenAI format and sends to OpenCode Go's `/v1/chat/completions`.
+3. OpenCode Go returns standard-format responses — no unwrapping needed.
+4. **Responses API models** (Grok, GPT-5.6-luna, Muse Spark) are **not supported** — see note below.
 
 ---
 
@@ -77,11 +101,22 @@ This forces LiteLLM to use `/chat/completions` for Anthropic requests instead of
 
 ---
 
+## OpenCode Go endpoint types
+
+OpenCode Go serves models from three different endpoints. The routing proxy handles
+this automatically, but here's how they map:
+
+| Endpoint | Protocol | Models | How it's routed |
+|---|---|---|---|
+| `/v1/chat/completions` | OpenAI Chat | DeepSeek V4, Kimi K2-3, GLM 5.x, MiMo V2, Hy3/4, LongCat 2.0 | Via LiteLLM (Anthropic → OpenAI translation) |
+| `/v1/messages` | Anthropic Messages | Qwen 3.6-3.8, MiniMax M2.5-M3 | Direct to OpenCode (no translation needed) |
+| `/v1/responses` | OpenAI Responses | Grok 4.6, GPT-5.6-luna, Muse Spark | **Not supported** — neither Anthropic nor Chat format maps to Responses API |
+
 ## Prerequisites
 
 - **Python 3.7+**
 - **LiteLLM** installed (see [How to Run](#how-to-run))
-- A **Cline API key** from [cline.bot](https://cline.bot)
+- A **Cline API key** from [cline.bot](https://cline.bot) OR an **OpenCode Go subscription** from [opencode.ai](https://opencode.ai/auth) ($10/month)
 - **Claude Code** installed
 
 ---
@@ -105,9 +140,9 @@ After this, LiteLLM should start normally.
 
 ---
 
-## Setup
+### Cline setup
 
-### 1. Configure LiteLLM (`litellm-config.yaml`)
+#### 1. Configure LiteLLM (`litellm-config.yaml`)
 
 ```yaml
 model_list:
@@ -134,9 +169,82 @@ litellm_settings:
 
 > **Note on model names:** The `model` values above (e.g. `openai/cline-pass/deepseek-v4-flash`) use the `cline-pass/` prefix, which is for users with **Cline Pass**. If you use Cline **without** Cline Pass, the model names won't have the `cline-pass/` prefix — they'll be something like `openai/deepseek/deepseek-v4-flash`. Adjust the `model` values in your config to match the models available on your account.
 
-### 2. Configure Claude Code (`settings.json`)
+---
 
-Place this in `~/.claude/settings.json`:
+### OpenCode Go setup
+
+#### 1. LiteLLM config (`litellm-config-opencode.yaml`)
+
+Models that go through LiteLLM (OpenAI-compatible ones) are already configured:
+
+```yaml
+model_list:
+  - model_name: claude-opus-5
+    litellm_params:
+      model: openai/deepseek-v4-pro
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: YOUR_OPENCODE_API_KEY
+
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: openai/deepseek-v4-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: YOUR_OPENCODE_API_KEY
+
+litellm_settings:
+  master_key: sk-1234567890
+  drop_params: true
+  anthropic_route: true
+  use_chat_completions_url_for_anthropic_messages: true
+```
+
+The `model` field uses the bare model ID (e.g. `deepseek-v4-pro`) without any prefix.
+
+#### 2. Routing proxy environment
+
+The routing proxy (`opencode_proxy.py`) needs the **OpenCode API key** as an
+environment variable:
+
+```bash
+set OPENCODE_API_KEY=your_opencode_api_key_here
+```
+
+It reads it from the `OPENCODE_API_KEY` env var. The proxy listens on port 4000
+by default and LiteLLM runs on port 4001.
+
+#### 3. Claude Code (`settings.json`)
+
+Point Claude Code at the routing proxy:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4000",
+    "ANTHROPIC_AUTH_TOKEN": "sk-1234567890"
+  },
+  "theme": "dark",
+  "model": "sonnet"
+}
+```
+
+> The routing proxy receives all requests. For Anthropic-native models (Qwen,
+> MiniMax) it forwards directly to OpenCode. For others it sends to LiteLLM
+> on port 4001 for translation.
+
+#### 4. How it decides routing
+
+The proxy checks the request body's `model` field against a built-in map in
+`opencode_proxy.py`. If the mapped model ID is in `ANTHROPIC_NATIVE_MODELS`
+(Qwen, MiniMax), it goes directly to OpenCode's `/v1/messages` — no LiteLLM
+involved. Otherwise it goes through LiteLLM for format translation.
+
+To add a custom mapping, edit the `MODEL_MAP` dict in `opencode_proxy.py`.
+
+---
+
+#### 2. Configure Claude Code (`settings.json`)
+
+For Cline, place this in `~/.claude/settings.json`:
 
 ```json
 {
@@ -157,7 +265,9 @@ Place this in `~/.claude/settings.json`:
 
 ## How to Run
 
-### 1. Install LiteLLM
+### Cline
+
+#### 1. Install LiteLLM
 
 ```bash
 pip install 'litellm[proxy]'
@@ -170,9 +280,7 @@ pip uninstall fastapi
 pip install 'fastapi<0.121.0'
 ```
 
-### 2. Start the unwrap proxy
-
-The proxy reads the API key from the `Authorization` header that LiteLLM forwards (which comes from `api_key` in `litellm-config.yaml`), so no `CLINE_API_KEY` env var is needed:
+#### 2. Start the unwrap proxy
 
 ```bash
 python3 cline_unwrap_proxy.py
@@ -184,21 +292,48 @@ The proxy listens on `127.0.0.1:5001` by default. To change the port:
 PROXY_PORT=5002 python3 cline_unwrap_proxy.py
 ```
 
-### 3. Start LiteLLM
+#### 3. Start LiteLLM
 
 ```bash
 litellm --config litellm-config.yaml --port 4000
 ```
 
-LiteLLM listens on `http://localhost:4000`.
-
-### 4. Start Claude Code
+#### 4. Start Claude Code
 
 ```bash
 claude
 ```
 
-Claude Code will now use the models you configured in LiteLLM.
+### OpenCode Go
+
+#### 1. Set the API key
+
+```bash
+set OPENCODE_API_KEY=your_opencode_api_key_here
+```
+
+#### 2. Start LiteLLM (for OpenAI-compatible models)
+
+```bash
+litellm --config litellm-config-opencode.yaml --port 4001
+```
+
+#### 3. Start the routing proxy
+
+```bash
+python3 opencode_proxy.py
+```
+
+The proxy listens on port 4000 by default. It auto-detects which models go
+directly to OpenCode (Qwen, MiniMax) and which route through LiteLLM.
+
+#### 4. Start Claude Code
+
+```bash
+claude
+```
+
+Claude Code points at the routing proxy (port 4000), which handles everything.
 
 ---
 
@@ -249,6 +384,8 @@ If you get a valid response with `"type": "message"`, everything is working.
 | `401 Unauthorized`                                                  | Wrong Cline API key                                           | Verify `api_key` in `litellm-config.yaml` (the proxy forwards it as-is)           |
 | `This model isn't mapped yet`                                       | Model not in LiteLLM's pricing database                       | Harmless — only affects cost tracking, not functionality                          |
 | `ImportError: cannot import name 'get_flat_dependant'`              | FastAPI version too new for LiteLLM                           | `pip uninstall fastapi && pip install 'fastapi<0.121.0'`                          |
+| OpenCode direct route hangs or errors                               | Model not in `ANTHROPIC_NATIVE_MODELS` set in proxy           | Add the model id to `ANTHROPIC_NATIVE_MODELS` in `opencode_proxy.py`              |
+| OpenCode chat route has wrong model ID                              | `MODEL_MAP` maps to wrong OpenCode model ID                  | Fix the mapping in `MODEL_MAP` in `opencode_proxy.py`                             |
 
 ### Debugging
 
@@ -262,12 +399,15 @@ litellm --config litellm-config.yaml --port 4000 --detailed_debug
 
 ## Files
 
-| File                    | Purpose                                                  |
-| ----------------------- | -------------------------------------------------------- |
-| `litellm-config.yaml`   | LiteLLM proxy configuration (models, settings)           |
-| `settings.json`         | Claude Code configuration (env vars, model)              |
-| `cline_unwrap_proxy.py` | Pass-through proxy that unwraps cline.bot's `data` field |
-| `dashboard.py`          | Web dashboard that manages the setup below               |
+| File                          | Purpose                                                          |
+| ----------------------------- | ---------------------------------------------------------------- |
+| `litellm-config.yaml`         | LiteLLM proxy configuration for Cline backend                    |
+| `litellm-config-opencode.yaml`| LiteLLM proxy configuration for OpenCode Go backend              |
+| `settings.json`               | Claude Code configuration (env vars, model)                      |
+| `cline_unwrap_proxy.py`       | Pass-through proxy that unwraps cline.bot's `data` field         |
+| `opencode_proxy.py`           | Routing proxy that sends Anthropic-native models direct, others via LiteLLM |
+| `dashboard.py`                | Web dashboard that manages the setup with both backends          |
+| `dashboard_state.json`        | Dashboard state (persisted ports, backend selection)             |
 
 ---
 
@@ -286,35 +426,33 @@ Then open **http://127.0.0.1:8080**. (Change the port with `DASH_PORT=9000 pytho
 
 ### What it does
 
-- **Creates `litellm-config.yaml`** on first launch if it doesn't exist (with
-  defaults you can edit in the UI).
-- **Edit models & keys** — pick the Opus and Sonnet models from a dropdown of the
-  ClinePass models (at [cline.bot docs](https://docs.cline.bot/getting-started/clinepass#models)),
-  or choose **"Custom…"** to type your own model id. Edit the Cline API key and
-  the LiteLLM master key in plain-text fields.
-- **Start / Stop proxy** — one button launches the whole chain:
-  `litellm → cline_unwrap_proxy.py → cline.bot`.
+- **Backend selector** — switch between Cline and OpenCode Go backends. Each shows the relevant model lists (grouped by endpoint type for OpenCode), API key fields, and port configuration.
+- **Creates `litellm-config.yaml`** on first launch if it doesn't exist.
+- **Edit models & keys** — pick the Opus and Sonnet models from dropdowns, or choose **"Custom…"** to type your own model id. For OpenCode, models are grouped by endpoint type (`/v1/chat/completions`, `/v1/messages`).
+- **Start / Stop proxy** — one button launches the whole chain for the selected backend:
+  - Cline: `litellm → cline_unwrap_proxy.py → cline.bot`
+  - OpenCode: `routing proxy + litellm → opencode.ai`
 - **Auto-restart on change** — whenever you save the config while the proxy is
   running, the chain is stopped and restarted with the new settings automatically.
-- **Live logs** — a tabbed, auto-refreshing log viewer for both the litellm proxy
-  and the unwrap proxy.
-- **Settings hint** — shows the matching `~/.claude/settings.json` snippet for
-  your current master key and litellm port.
+- **Live logs** — a tabbed, auto-refreshing log viewer for all running processes.
 
 ### How it stores settings
 
 - The **models, API keys, and litellm settings** are written to `litellm-config.yaml`
-  (the same file the manual workflow uses).
-- The **litellm port** is kept in `dashboard_state.json` next to the config, because
-  `litellm-config.yaml` has no port entry — the dashboard persists it so the port you
-  set in the UI is the port the proxy runs on.
+  (for Cline) or `litellm-config-opencode.yaml` (for OpenCode Go).
+- The **backend selection, litellm port, and proxy port** are kept in `dashboard_state.json`.
 
 ### Manual steps it automates
 
 These are the same steps as the [How to Run](#how-to-run) section — the dashboard's
-**Start proxy** button just runs them for you:
+**Start proxy** button runs the full chain for the selected backend:
 
+**Cline:**
 1. Starts `cline_unwrap_proxy.py` (port from your config, default 5001).
 2. Starts `litellm --config litellm-config.yaml --port <litellm_port>`.
 
-Then point Claude Code at LiteLLM (step 4 above / the `settings.json` hint in the UI).
+**OpenCode Go:**
+1. Starts LiteLLM with `--config litellm-config-opencode.yaml --port 4001`.
+2. Starts `opencode_proxy.py` (port 4000), which routes requests between LiteLLM and OpenCode directly.
+
+Then point Claude Code at the proxy (port 4000 for either backend via the `settings.json` hint in the UI).
