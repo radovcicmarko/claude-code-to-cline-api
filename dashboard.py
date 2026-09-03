@@ -45,16 +45,22 @@ CLINE_PASS_MODELS = [
     "minimax-m3", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus",
 ]
 
+# Zen free models (https://opencode.ai/docs/zen/) — served from a different
+# base URL (https://opencode.ai/zen/v1) than the paid "go" endpoint.
+ZEN_FREE_MODELS = [
+    "big-pickle", "mimo-v2.5-free", "ling-3.0-flash-fin-free",
+    "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
+    "deepseek-v4-flash-free", "laguna-s-2.1-free",
+]
+
 OPENCODE_MODELS = {
     "/v1/chat/completions": [
         "glm-5.3-flash", "glm-5.3", "glm-5.2", "glm-5.1",
         "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "longcat-2.0",
         "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
         "mimo-v2.5", "mimo-v2.5-pro", "hy4-preview", "hy3",
-        # Zen free models (https://opencode.ai/docs/zen/)
-        "big-pickle", "mimo-v2.5-free", "ling-3.0-flash-fin-free",
-        "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
-        "deepseek-v4-flash-free", "laguna-s-2.1-free",
+        # Zen free models
+        *ZEN_FREE_MODELS,
     ],
     "/v1/messages": [
         "minimax-m3", "minimax-m2.7", "minimax-m2.5",
@@ -173,6 +179,12 @@ def build_cline_config(*, opus_model, sonnet_model, cline_api_key, master_key,
     return text
 
 
+def opencode_api_base(model):
+    if model in ZEN_FREE_MODELS or model.endswith("-free"):
+        return "https://opencode.ai/zen/v1"
+    return "https://opencode.ai/zen/go/v1"
+
+
 def build_opencode_litellm_config(*, opus_model, sonnet_model, api_key, master_key):
     blocks = []
     for model_name, model in (
@@ -182,7 +194,7 @@ def build_opencode_litellm_config(*, opus_model, sonnet_model, api_key, master_k
             "  - model_name: " + model_name + "\n"
             "    litellm_params:\n"
             "      model: openai/" + model + "\n"
-            "      api_base: https://opencode.ai/zen/go/v1\n"
+            "      api_base: " + opencode_api_base(model) + "\n"
             "      api_key: " + api_key + "\n")
 
     settings = (
@@ -279,6 +291,7 @@ def read_config():
         "opus_model": _os_model(opus.get("model", "")),
         "sonnet_model": _os_model(sonnet.get("model", "")),
         "cline_api_key": opus.get("api_key", ""),
+        "opencode_api_key": opus.get("api_key", ""),
         "master_key": settings_block.get("master_key", "sk-1234567890"),
         "drop_params": _as_bool(settings_block.get("drop_params"), True),
         "anthropic_route": _as_bool(settings_block.get("anthropic_route"), True),
@@ -342,7 +355,8 @@ class ManagedProcess:
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL, cwd=BASE_DIR, env=env,
                 creationflags=_no_window(), encoding="utf-8", errors="replace",
-                bufsize=1, universal_newlines=True)
+                bufsize=1, universal_newlines=True,
+                start_new_session=not IS_WINDOWS)
             self.proc = proc
         threading.Thread(target=self._tail, args=(proc,), daemon=True).start()
         return True
@@ -1008,6 +1022,7 @@ document.getElementById("btn-save").addEventListener("click", saveCfg);
 function loadCfg(){
   fetch("/api/config").then(function(r){ return r.json(); }).then(function(d){
     document.getElementById("cline-key").value = d.cline_api_key || "";
+    document.getElementById("opencode-key").value = d.opencode_api_key || "";
     document.getElementById("master-key").value = d.master_key || "sk-1234567890";
     document.getElementById("litellm-port").value = (d.ports && d.ports.litellm_port) || 4000;
     document.getElementById("proxy-port").value = (d.ports && d.ports.proxy_port) || 5001;
