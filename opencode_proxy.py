@@ -104,6 +104,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "Content-Type": "application/json",
                 "anthropic-version": "2023-06-01",
             }
+            # Forward x-opencode-session from Claude Code so LiteLLM
+            # can pass it through to OpenCode Go for routing/prompt caching.
+            session = self.headers.get("x-opencode-session")
+            if session:
+                headers["x-opencode-session"] = session
 
         req = Request(url, data=body, headers=headers, method=method)
         try:

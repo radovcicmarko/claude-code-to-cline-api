@@ -3,13 +3,15 @@ model_list:
     litellm_params:
       model: openai/glm-5.3-flash
       api_base: https://opencode.ai/zen/go/v1
-      api_key: <some api key>
+      extra_headers:
+        x-opencode-session: claude-code-opencode-1
 
   - model_name: claude-sonnet-5
     litellm_params:
       model: openai/glm-5.3-flash
       api_base: https://opencode.ai/zen/go/v1
-      api_key: <some api key>
+      extra_headers:
+        x-opencode-session: claude-code-opencode-1
 
 litellm_settings:
   master_key: sk-1234567890 # authentication for LiteLLM
