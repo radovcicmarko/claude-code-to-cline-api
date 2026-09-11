@@ -18,3 +18,7 @@ litellm_settings:
   drop_params: true
   anthropic_route: true
   use_chat_completions_url_for_anthropic_messages: true
+  forward_client_headers_to_llm_api: true
+
+general_settings:
+  forward_client_headers_to_llm_api: true

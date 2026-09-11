@@ -2,14 +2,15 @@
 """
 Routing proxy for OpenCode Go.
 
-Claude Code sends Anthropic-format requests to this proxy. It routes:
-  - Anthropic-native models (Qwen, MiniMax)  → OpenCode Go /v1/messages directly
-  - OpenAI-compatible models (DeepSeek, Kimi, etc.) → LiteLLM for translation
+Claude Code sends Anthropic-format requests to this proxy.
+The proxy forwards requests to LiteLLM, which handles model mapping
+and auth to OpenCode Go. It maps X-Claude-Code-Session-Id → x-opencode-session.
 
 Flow:
-  Claude Code → routing proxy (:listen_port)
-    ├─ Anthropic-native model → https://opencode.ai/zen/go/v1/messages  (direct)
-    └─ Other models → http://127.0.0.1:litellm_port/v1/messages       (via LiteLLM)
+  Claude Code → proxy (:listen_port) → LiteLLM → OpenCode Go /v1/messages
+
+Model mapping is handled entirely by LiteLLM's config (litellm-config-opencode.yaml).
+The proxy passes through model names unchanged to avoid double-mapping.
 """
 
 import json
@@ -23,36 +24,8 @@ OPENCODE_API_BASE = os.environ.get(
 LITELLM_BASE = os.environ.get(
     "LITELLM_BASE", "http://127.0.0.1:4001")
 
-# Models that support Anthropic /v1/messages natively on OpenCode Go.
-ANTHROPIC_NATIVE_MODELS = {
-    "minimax-m3", "minimax-m2.7", "minimax-m2.5",
-    "qwen3.8-max", "qwen3.8-flash",
-    "qwen3.7-max", "qwen3.7-plus",
-    "qwen3.6-plus",
-}
-
-# Maps LiteLLM model_name → actual OpenCode model ID.
-# This lets the proxy decide routing based on the real model, even though
-# Claude Code sends LiteLLM-level model names in requests.
-# Must match the model_list in litellm-config-opencode.yaml.
-#
-# Entries where the OpenCode model ID is in ANTHROPIC_NATIVE_MODELS will
-# be routed directly to OpenCode; everything else goes through LiteLLM.
-MODEL_MAP = {
-    "claude-opus-5": "deepseek-v4-pro",
-    "claude-sonnet-5": "deepseek-v4-flash",
-    "claude-haiku-5": "kimi-k3",
-    # Add custom mappings below:
-}
-
 
 class ProxyHandler(BaseHTTPRequestHandler):
-    litellm_auth = ""
-
-    def _resolve_model(self, model_name):
-        """Map a LiteLLM model name to the real OpenCode model ID."""
-        return MODEL_MAP.get(model_name, model_name)
-
     def _route(self, body_bytes):
         """Determine target for the request."""
         try:
@@ -60,57 +33,43 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             body = {}
         model_name = body.get("model", "")
-        real_model = self._resolve_model(model_name)
-
-        if real_model in ANTHROPIC_NATIVE_MODELS:
-            return "opencode", real_model
-        else:
-            return "litellm", model_name  # forward LiteLLM name as-is
+        return "litellm", model_name
 
     def _handle(self, method):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else b""
 
-        # Save LiteLLM auth from incoming request (Claude Code sends it)
-        ProxyHandler.litellm_auth = self.headers.get("Authorization", "")
+        # Debug: log incoming headers from Claude Code
+        sys.stderr.write("<<< INCOMING HEADERS: %s\n" % (
+            json.dumps(dict(self.headers)),))
+        sys.stderr.flush()
 
-        route, model_for_url = self._route(body)
+        route, model_name = self._route(body)
 
-        # Update the model in the body if needed (when routing directly to OpenCode)
-        if route == "opencode":
-            # Rewrite body with the real OpenCode model ID
-            try:
-                parsed = json.loads(body) if body else {}
-                parsed["model"] = model_for_url
-                body = json.dumps(parsed).encode()
-            except json.JSONDecodeError:
-                pass
+        url = LITELLM_BASE.rstrip("/") + "/v1/messages"
+        headers = {
+            "Authorization": self.headers.get("Authorization", ""),
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
+        # Map X-Claude-Code-Session-Id → x-opencode-session
+        session_id = self.headers.get("X-Claude-Code-Session-Id", "")
+        if session_id:
+            headers["x-opencode-session"] = session_id
+        # Forward all x- headers from the original request
+        for key, val in self.headers.items():
+            low = key.lower()
+            if low.startswith("x-") and low != "x-opencode-session":
+                headers[key] = val
 
-            url = OPENCODE_API_BASE.rstrip("/") + "/v1/messages"
-            auth_key = os.environ.get("OPENCODE_API_KEY", "")
-            headers = {
-                "Content-Type": "application/json",
-                "anthropic-version": "2023-06-01",
-                "x-opencode-session": os.environ.get(
-                    "OPENCODE_SESSION", "claude-code-opencode-1"),
-            }
-            if auth_key:
-                headers["Authorization"] = "Bearer " + auth_key
-        else:
-            # Route through LiteLLM — forward body unchanged
-            url = LITELLM_BASE.rstrip("/") + "/v1/messages"
-            headers = {
-                "Authorization": ProxyHandler.litellm_auth,
-                "Content-Type": "application/json",
-                "anthropic-version": "2023-06-01",
-            }
-            # Forward x-opencode-session from Claude Code so LiteLLM
-            # can pass it through to OpenCode Go for routing/prompt caching.
-            session = self.headers.get("x-opencode-session")
-            if session:
-                headers["x-opencode-session"] = session
-
-        req = Request(url, data=body, headers=headers, method=method)
+        sys.stderr.write(">>> ROUTE=%s URL=%s HEADERS=%s\n" % (
+            route, url, json.dumps(dict(headers)),))
+        sys.stderr.flush()
+        req = Request(url, data=body, headers={}, method=method)
+        # Set headers directly on the Message object to preserve exact casing
+        # (Request.add_header() title-cases keys, breaking x-opencode-session)
+        for k, v in headers.items():
+            req.headers[k] = v
         try:
             resp = urlopen(req, timeout=600)
         except Exception as e:
@@ -166,7 +125,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             "object": "list",
             "data": [
                 {"id": m, "object": "model"}
-                for m in sorted(set(MODEL_MAP.values()))
+                for m in ["claude-opus-5", "claude-sonnet-5", "claude-haiku-5"]
             ]
         }).encode()
         self.send_header("Content-Length", str(len(body)))
@@ -183,12 +142,7 @@ def main():
     print("OpenCode routing proxy listening on 127.0.0.1:%d" % port, flush=True)
     print("  OpenCode API base: %s" % OPENCODE_API_BASE, flush=True)
     print("  LiteLLM base:      %s" % LITELLM_BASE, flush=True)
-    an = [m for m in MODEL_MAP.values() if m in ANTHROPIC_NATIVE_MODELS]
-    lit = [m for m in MODEL_MAP.values() if m not in ANTHROPIC_NATIVE_MODELS]
-    if an:
-        print("  -> direct to OpenCode: %s" % ", ".join(an), flush=True)
-    if lit:
-        print("  -> via LiteLLM:        %s" % ", ".join(lit), flush=True)
+    print("  Model mapping: handled by LiteLLM config", flush=True)
     server.serve_forever()
 
 
